@@ -9,18 +9,16 @@ var bcrypt = require('bcrypt');
 const app = express()
 const port = 2137
 
-dotenv.config();
-
+require('dotenv').config({path:'backend/.env'})
 
 const pool =  mysql.createPool({
   host: 'localhost',
   user: 'root',
-  database: 'zawody_empty',
+  database: 'zawody',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0
 })
-
 const promisePool = pool.promise();
 
 const corsOptions = {
@@ -45,9 +43,8 @@ function authenticateToken(req, res, next) {
   }
 
   jwt.verify(token, process.env.TOKEN_SECRET, (err, user) => {
-    sendToLog(req.path, err)
-
     if (err) {
+      sendToLog(req.path, err)
       response.status.code = '403'
       response.status.message = 'Nieprawidłowe wywołanie [INV_TOKEN]'
       return res.status(response.status.code).send(response);     
@@ -58,18 +55,51 @@ function authenticateToken(req, res, next) {
     next()
   })
 }
-
-function sendToLog(path, mess) {
+function sendToLog(path, mess, user) {
   const date = new Date()
-  console.log('[' + date.toLocaleString("pl-PL") + '] ' + path + ': ' + mess)
+  console.log('[' + date.toLocaleString("pl-PL") + '] ' + '[' + path + '] ' + '[' + user + '] ' + ': ' + mess)
 }
+async function checkAdmin(req, res, next) {
+  const response = {
+    status: {
+      code: '0',
+      message: null
+    }
+  }
+  const workingData = {
+    scope: null,
+    error: null
+  }
+  try {
+    const [rows, fields] = await promisePool.execute('SELECT scope FROM users WHERE user_id = ?;',[req.user.uid])
+    workingData.scope = JSON.parse(rows[0].scope)
+  }
+  catch (err) {
+    workingData.error = err
+    sendToLog(req.path, err)
+  }
 
+  if (workingData.error) {
+    response.status.code = '500'
+    response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
+    return res.status(response.status.code).send(response);
+  }
+
+  else if (!workingData.scope.includes('admin')) {
+    response.status.code = '403'
+    response.status.message = 'Niewystarczające uprawnienia do wykonania tej operacji'
+    sendToLog(req.path, response.status.message, req.user.uid)
+    return res.status(response.status.code).send(response)
+  }
+  else {
+    next()
+  }
+}
 app.use(express.json()) 
 
 app.options('/api/getConfig', cors(corsOptions), (req,res) => {
   res.status(200)
 })
-
 app.get('/api/getConfig', cors(corsOptions), async (req, res) => {
   const workingData = {
     config: null,
@@ -88,7 +118,6 @@ app.get('/api/getConfig', cors(corsOptions), async (req, res) => {
   }
   catch (err) {
     workingData.error = err
-    const date = new Date()
     sendToLog(req.path, err)
   }
 
@@ -114,7 +143,6 @@ app.get('/api/getConfig', cors(corsOptions), async (req, res) => {
 app.options('/api/getNews', cors(corsOptions), (req,res) => {
   res.status(200)
 })
-
 app.get('/api/getNews', cors(corsOptions), async (req, res) => {
   const workingData = {
     news: null,
@@ -130,6 +158,12 @@ app.get('/api/getNews', cors(corsOptions), async (req, res) => {
   try {
     const [rows, fields] = await promisePool.execute('SELECT arti_id, users.nick, CONCAT(users.name, " ", users.surname) AS full_name, news.date, news.time, title, content FROM news JOIN users ON users.user_id = news.user_id ORDER BY news.date DESC, news.time DESC;',[])
     workingData.news = rows
+    workingData.news.forEach(post => {
+      const month = parseInt(post.date.getMonth())+parseInt(1)
+      const dateString = post.date.getFullYear() + '-' + month + '-' + post.date.getDate()
+      post.date = dateString
+      
+    })
   }
   catch (err) {
     workingData.error = err
@@ -138,7 +172,7 @@ app.get('/api/getNews', cors(corsOptions), async (req, res) => {
   
   if (workingData.error) {
     response.status.code = '500'
-    response.status.message = 'Wewnętrzny błąd serwera ' + error
+    response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
     res.status(response.status.code).send(response);
   }
 
@@ -158,7 +192,6 @@ app.get('/api/getNews', cors(corsOptions), async (req, res) => {
 app.options('/api/getMatches', cors(corsOptions), (req,res) => {
   res.status(200)
 })
-
 app.get('/api/getMatches', cors(corsOptions), async (req, res) => {
   const workingData = {
     matches: null,
@@ -226,7 +259,6 @@ app.get('/api/getMatches', cors(corsOptions), async (req, res) => {
 app.options('/api/getTeams', cors(corsOptions), (req,res) => {
   res.status(200)
 })
-
 app.get('/api/getTeams', cors(corsOptions), async (req, res) => {
   const workingData = {
     teams: null,
@@ -270,7 +302,6 @@ app.get('/api/getTeams', cors(corsOptions), async (req, res) => {
 app.options('/api/getTeam/:team_id', cors(corsOptions), (req,res) => {
   res.status(200)
 })
-
 app.get('/api/getTeam/:team_id', cors(corsOptions), async (req, res) => {
   const workingData = {
     team: null,
@@ -331,11 +362,10 @@ app.get('/api/getTeam/:team_id', cors(corsOptions), async (req, res) => {
   }
 })
 
-app.options('/api/login', cors(corsOptions), (req,res) => {
+app.options('/api/user/login', cors(corsOptions), (req,res) => {
   res.status(200)
 })
-
-app.post('/api/login', cors(corsOptions), async (req,res) => {
+app.post('/api/user/login', cors(corsOptions), async (req,res) => {
   const workingData = {
     passhash: null,
     error: null,
@@ -400,6 +430,7 @@ app.post('/api/login', cors(corsOptions), async (req,res) => {
       else {
         response.status.code = '200'
         response.status.message = 'OK'
+        sendToLog(req.path, process.env.TOKEN_SECRET)
         response.data.token = jwt.sign({ iat: Date.now(), uid: workingData.userid, iss: '192.168.0.100' }, process.env.TOKEN_SECRET, { expiresIn: '3600s' })
         res.status(200).send(response);
       }
@@ -410,7 +441,6 @@ app.post('/api/login', cors(corsOptions), async (req,res) => {
 app.options('/api/user', cors(corsOptions), (req,res) => {
   res.status(200)
 })
-
 app.post('/api/user', cors(corsOptions), authenticateToken, async (req,res) => {
   const workingData = {
     error: null,
@@ -428,6 +458,7 @@ app.post('/api/user', cors(corsOptions), authenticateToken, async (req,res) => {
   try {
     const [rows, fields] = await promisePool.execute('SELECT users.nick, users.scope, users.name, users.surname, users.usrclass, users.email, users.cm, users.discord, users.paid, teams.team_name, teams.team_admin, teams.invite, teams.team_id FROM users LEFT JOIN teams ON teams.team_id=users.team_id WHERE users.user_id=?;',[req.user.uid])
     workingData.user = rows[0]
+    workingData.user.scope = JSON.parse(workingData.user.scope)
   }
   catch (err) {
     workingData.error = err
@@ -450,6 +481,85 @@ app.post('/api/user', cors(corsOptions), authenticateToken, async (req,res) => {
     response.data.user = workingData.user
     response.status.code = '200'
     response.status.message = 'OK'
+    res.status(200).send(response);
+  }
+})
+
+app.options('/api/user/update', cors(corsOptions), (req,res) => {
+  res.status(200)
+})
+app.post('/api/user/update', cors(corsOptions), authenticateToken, async (req,res) => {
+  const workingData = {
+    error: null
+  }
+  const response = {
+    status: {
+      code: '0',
+      message: null
+    }
+  }
+  try {
+    const [rows, fields] = await promisePool.execute('UPDATE users SET name = ? , surname = ? , usrclass = ?, cm = ?, discord= ? WHERE user_id = ?;',
+    [req.body.name,
+    req.body.surname,
+    req.body.usrclass,
+    req.body.cm,
+    req.body.discord,
+    req.user.uid])
+  }
+  catch (err) {
+    workingData.error = err
+    sendToLog(req.path, err)
+  }
+  if (workingData.error) {
+    response.status.code = '500'
+    response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
+    res.status(response.status.code).send(response);
+  }
+  else {
+    response.status.code = '200'
+    response.status.message = 'Zaktualizowano poprawnie'
+    res.status(200).send(response);
+  }
+})
+
+app.options('/api/admin/sendNews', cors(corsOptions), (req,res) => {
+  res.status(200)
+})
+app.post('/api/admin/sendNews', cors(corsOptions), authenticateToken, checkAdmin, async (req,res) => {
+  const workingData = {
+    error: null
+  }
+  const response = {
+    status: {
+      code: '0',
+      message: null
+    }
+  }
+  const date = new Date()
+  const month = parseInt(date.getMonth())+parseInt(1)
+  const dateString = date.getFullYear() + '-' + month + '-' + date.getDate()
+  const timeString = date.getHours() + ':' + date.getMinutes() + ':' + date.getSeconds()
+  try {
+    const [rows, fields] = await promisePool.execute('INSERT INTO news(user_id, news.date, news.time, title, content) VALUES (?,?,?,?,?);',
+    [req.user.uid,
+    dateString,
+    timeString,
+    req.body.title,
+    req.body.content])
+  }
+  catch (err) {
+    workingData.error = err
+    sendToLog(req.path, err)
+  }
+  if (workingData.error) {
+    response.status.code = '500'
+    response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
+    res.status(response.status.code).send(response);
+  }
+  else {
+    response.status.code = '200'
+    response.status.message = 'Zaktualizowano poprawnie'
     res.status(200).send(response);
   }
 })
