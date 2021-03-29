@@ -4,12 +4,15 @@ const cors = require('cors')
 const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv');
 var bcrypt = require('bcrypt');
+const { request } = require('express');
 
 
 const app = express()
 const port = 2137
 
-require('dotenv').config({path:'backend/.env'})
+let refreshTokens = []
+
+require('dotenv').config({path:'turniej_strona_back_v2/.env'})
 
 const pool =  mysql.createPool({
   host: 'localhost',
@@ -28,7 +31,6 @@ const corsOptions = {
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization']
   const token = authHeader && authHeader.split(' ')[1]
-
   const response = {
     status: {
       code: '0',
@@ -42,15 +44,15 @@ function authenticateToken(req, res, next) {
     return res.status(response.status.code).send(response);
   }
 
-  jwt.verify(token, process.env.TOKEN_SECRET, (err, user) => {
+  jwt.verify(token, process.env.TOKEN_SECRET, (err, decoded) => {
     if (err) {
       sendToLog(req.path, err)
       response.status.code = '403'
-      response.status.message = 'Nieprawidłowe wywołanie [INV_TOKEN]'
+      response.status.message = 'Brak dostępu [INV_TOKEN]'
       return res.status(response.status.code).send(response);     
     }
 
-    req.user = user
+    req.user = decoded
 
     next()
   })
@@ -162,7 +164,6 @@ app.get('/api/getNews', cors(corsOptions), async (req, res) => {
       const month = parseInt(post.date.getMonth())+parseInt(1)
       const dateString = post.date.getFullYear() + '-' + month + '-' + post.date.getDate()
       post.date = dateString
-      
     })
   }
   catch (err) {
@@ -208,6 +209,9 @@ app.get('/api/getMatches', cors(corsOptions), async (req, res) => {
     const [rows, fields] = await promisePool.execute('SELECT m.match_id, m.date, m.time, m.team_id_1, m.team_id_2, m.team_id_1_score, m.team_id_2_score, m.note, t.team_name AS team_name_1, t1.team_name AS team_name_2 FROM matches m JOIN teams t on t.team_id = m.team_id_1 JOIN teams t1 on t1.team_id = m.team_id_2 ORDER BY m.date DESC, m.time DESC;',[])
     workingData.matches = rows
     workingData.matches.forEach(match => {
+      const month = parseInt(match.date.getMonth())+parseInt(1)
+      const dateString = match.date.getFullYear() + '-' + month + '-' + match.date.getDate()
+      match.date = dateString
       if (match.team_id_1_score > match.team_id_2_score) {
         match._cellVariants = {
           team_id_1_score: 'success',
@@ -377,64 +381,119 @@ app.post('/api/user/login', cors(corsOptions), async (req,res) => {
       message: null
     },
     data: {
-      token: null
+      token: null,
+      refreshToken: null
     }
   }
-
-  try {
-    const [rows1, fields1] = await promisePool.execute('SELECT passhash FROM users WHERE nick=?',[req.body.uname])
-    if (rows1.length) workingData.passhash = rows1[0].passhash.replace('$2y$', '$2a$')
-  }
-  catch (err) {
-    workingData.error = err
-    sendToLog(req.path, err)
-  }
-
-  if (workingData.error) {
-    response.status.code = '500'
-    response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
-    res.status(response.status.code).send(response);
-  }
-
-  else if (!workingData.passhash) {
-    response.status.code = '404'
-    response.status.message = 'Nie znaleziono użytkownika!'
+  const badInput = !req.body.uname || !req.body.password
+  if (badInput) {
+    sendToLog(req.path, 'ktoś się bawił, nieprawidłowe wejście...', req.body.uname)
+    response.status.code = '400'
+    response.status.message = 'Nieprawidłowe wywołanie [FIELDS]'
     res.status(200).send(response);
   }
-
   else {
-    if (!bcrypt.compareSync(req.body.password, workingData.passhash)) {
-      response.status.code = '400'
-      response.status.message = 'Hasło nieprawidłowe'
+    try {
+      const [rows1, fields1] = await promisePool.execute('SELECT passhash FROM users WHERE nick=?',[req.body.uname])
+      if (rows1.length) workingData.passhash = rows1[0].passhash.replace('$2y$', '$2a$')
+    }
+    catch (err) {
+      workingData.error = err
+      sendToLog(req.path, err)
+    }
+  
+    if (workingData.error) {
+      response.status.code = '500'
+      response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
+      res.status(response.status.code).send(response);
+    }
+  
+    else if (!workingData.passhash) {
+      response.status.code = '404'
+      response.status.message = 'Nie znaleziono użytkownika!'
       res.status(200).send(response);
     }
+  
     else {
-      try {
-        const [rows2, fields1] = await promisePool.execute('SELECT user_id FROM users WHERE nick=?',[req.body.uname])
-        workingData.userid = rows2[0].user_id
-      }
-      catch (err) {
-        workingData.error = err
-        sendToLog(req.path, err)
-      }
-      if (workingData.error) {
-        response.status.code = '500'
-        response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
-        res.status(response.status.code).send(response);
-      }
-      else if (!workingData.userid) {
-        response.status.code = '404'
-        response.status.message = 'Nie znaleziono użytkownika [NO_ID_WITH_NICK]'
+      if (!bcrypt.compareSync(req.body.password, workingData.passhash)) {
+        response.status.code = '400'
+        response.status.message = 'Hasło nieprawidłowe'
         res.status(200).send(response);
       }
       else {
-        response.status.code = '200'
-        response.status.message = 'OK'
-        sendToLog(req.path, process.env.TOKEN_SECRET)
-        response.data.token = jwt.sign({ iat: Date.now(), uid: workingData.userid, iss: '192.168.0.100' }, process.env.TOKEN_SECRET, { expiresIn: '3600s' })
-        res.status(200).send(response);
+        try {
+          const [rows2, fields1] = await promisePool.execute('SELECT user_id FROM users WHERE nick=?',[req.body.uname])
+          workingData.userid = rows2[0].user_id
+        }
+        catch (err) {
+          workingData.error = err
+          sendToLog(req.path, err)
+        }
+        if (workingData.error) {
+          response.status.code = '500'
+          response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
+          res.status(response.status.code).send(response);
+        }
+        else if (!workingData.userid) {
+          response.status.code = '404'
+          response.status.message = 'Nie znaleziono użytkownika [NO_ID_WITH_NICK]'
+          res.status(200).send(response);
+        }
+        else {
+          response.status.code = '200'
+          response.status.message = 'OK'
+          response.data.token = jwt.sign({ uid: workingData.userid }, process.env.TOKEN_SECRET, { expiresIn: '1m', issuer: '192.168.0.100' })
+          response.data.refreshToken = jwt.sign({ uid: workingData.userid }, process.env.REFRESH_TOKEN_SECRET, { issuer: '192.168.0.100' })
+          refreshTokens.push(response.data.refreshToken);
+          res.status(response.status.code).send(response);
+        }
       }
     }
+  }
+})
+
+app.options('/api/user/refresh', cors(corsOptions), (req,res) => {
+  res.status(200)
+})
+app.post('/api/user/refresh', cors(corsOptions), (req,res) => {
+  const workingData = {
+    error: null,
+  }
+  const response = {
+    status: {
+      code: '0',
+      message: null
+    },
+    data: {
+      token: null,
+    }
+  }
+  if (!req.body.refreshToken) {
+    sendToLog(req.path, 'ktoś się bawił, nieprawidłowe wejście...')
+    response.status.code = '400'
+    response.status.message = 'Nieprawidłowe wywołanie [NO_REF_TOKEN]'
+    res.status(response.status.code).send(response);
+  }
+  else if (!refreshTokens.includes(req.body.refreshToken)) {
+    response.status.code = '403'
+    response.status.message = 'Brak dostępu [REF_TOKEN_REVOKED]'
+    res.status(response.status.code).send(response);
+  }
+  else {
+    jwt.verify(req.body.refreshToken, process.env.REFRESH_TOKEN_SECRET, (err, decoded) => {
+      if (err) {
+        sendToLog(req.path, err)
+        response.status.code = '403'
+        response.status.message = 'Brak dostępu [INV_REF_TOKEN]' + err   
+        res.status(response.status.code).send(response);
+      }
+      else {
+        response.status.code = '200',
+        response.status.message = 'OK',
+        response.data.token = jwt.sign({ uid: decoded.uid }, process.env.TOKEN_SECRET, { expiresIn: '15s', issuer: '192.168.0.100' })
+        res.status(response.status.code).send(response);
+      }
+    })
   }
 })
 
@@ -455,34 +514,66 @@ app.post('/api/user', cors(corsOptions), authenticateToken, async (req,res) => {
       user: null
     }
   }
-  try {
-    const [rows, fields] = await promisePool.execute('SELECT users.nick, users.scope, users.name, users.surname, users.usrclass, users.email, users.cm, users.discord, users.paid, teams.team_name, teams.team_admin, teams.invite, teams.team_id FROM users LEFT JOIN teams ON teams.team_id=users.team_id WHERE users.user_id=?;',[req.user.uid])
-    workingData.user = rows[0]
-    workingData.user.scope = JSON.parse(workingData.user.scope)
-  }
-  catch (err) {
-    workingData.error = err
-    sendToLog(req.path, err)
-  }
-
-  if (workingData.error) {
-    response.status.code = '500'
-    response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
-    res.status(response.status.code).send(response);
-  }
-
-  else if (!workingData.user) {
-    response.status.code = '404'
-    response.status.message = 'Nie znaleziono użytkownika [NO_USER_WITH_ID]'
-    res.status(response.status.code).send(response);
-  }
-
-  else {
-    response.data.user = workingData.user
-    response.status.code = '200'
-    response.status.message = 'OK'
+  const badInput = !req.user.uid
+  if (badInput) {
+    sendToLog(req.path, 'coś się totalnie wykrzaczyło')
+    response.status.code = '400'
+    response.status.message = 'Nieprawidłowe wywołanie [TOKEN_UID_NOT_PRESENT]'
     res.status(200).send(response);
   }
+  else {
+    try {
+      const [rows, fields] = await promisePool.execute('SELECT users.nick, users.scope, users.name, users.surname, users.usrclass, users.email, users.cm, users.discord, users.paid, teams.team_name, teams.team_admin, teams.invite, teams.team_id FROM users LEFT JOIN teams ON teams.team_id=users.team_id WHERE users.user_id=?;',[req.user.uid])
+      workingData.user = rows[0]
+      workingData.user.scope = JSON.parse(workingData.user.scope)
+    }
+    catch (err) {
+      workingData.error = err
+      sendToLog(req.path, err)
+    }
+  
+    if (workingData.error) {
+      response.status.code = '500'
+      response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
+      res.status(response.status.code).send(response);
+    }
+  
+    else if (!workingData.user) {
+      response.status.code = '404'
+      response.status.message = 'Nie znaleziono użytkownika [NO_USER_WITH_ID]'
+      res.status(response.status.code).send(response);
+    }
+  
+    else {
+      response.data.user = workingData.user
+      response.status.code = '200'
+      response.status.message = 'OK'
+      res.status(200).send(response);
+    }
+  }
+})
+
+app.options('/api/user/logout', cors(corsOptions), (req,res) => {
+  res.status(200)
+})
+app.post('/api/user/logout', cors(corsOptions), authenticateToken, (req,res) => {
+  const response = {
+    status: {
+      code: '0',
+      message: null
+    }
+  }
+  sendToLog(req.path, JSON.stringify(refreshTokens))
+  refreshTokens = refreshTokens.filter(t => {
+    //sendToLog(req.path, t)
+    const decoded = jwt.decode(t)
+    //sendToLog(req.path, decoded.uid)
+    decoded.uid !== req.user.uid});
+  sendToLog(req.path, JSON.stringify(refreshTokens))
+
+  response.status.code = '200'
+  response.status.message = 'OK'
+  res.status(response.status.code).send(response);
 })
 
 app.options('/api/user/update', cors(corsOptions), (req,res) => {
@@ -498,29 +589,39 @@ app.post('/api/user/update', cors(corsOptions), authenticateToken, async (req,re
       message: null
     }
   }
-  try {
-    const [rows, fields] = await promisePool.execute('UPDATE users SET name = ? , surname = ? , usrclass = ?, cm = ?, discord= ? WHERE user_id = ?;',
-    [req.body.name,
-    req.body.surname,
-    req.body.usrclass,
-    req.body.cm,
-    req.body.discord,
-    req.user.uid])
-  }
-  catch (err) {
-    workingData.error = err
-    sendToLog(req.path, err)
-  }
-  if (workingData.error) {
-    response.status.code = '500'
-    response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
-    res.status(response.status.code).send(response);
-  }
-  else {
-    response.status.code = '200'
-    response.status.message = 'Zaktualizowano poprawnie'
+  const badInput = !req.body.name || !req.body.surname || !req.body.usrclass || !req.body.cm || !req.body.discord || !req.user.uid
+  if (badInput) {
+    sendToLog(req.path, 'ktoś się bawił, nieprawidłowe wejście...', req.user.uid)
+    response.status.code = '400'
+    response.status.message = 'Nieprawidłowe wywołanie [FIELDS]'
     res.status(200).send(response);
   }
+  else {
+    try {
+      const [rows, fields] = await promisePool.execute('UPDATE users SET name = ? , surname = ? , usrclass = ?, cm = ?, discord= ? WHERE user_id = ?;',
+      [req.body.name,
+      req.body.surname,
+      req.body.usrclass,
+      req.body.cm,
+      req.body.discord,
+      req.user.uid])
+    }
+    catch (err) {
+      workingData.error = err
+      sendToLog(req.path, err)
+    }
+    if (workingData.error) {
+      response.status.code = '500'
+      response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
+      res.status(response.status.code).send(response);
+    }
+    else {
+      response.status.code = '200'
+      response.status.message = 'Zaktualizowano poprawnie'
+      res.status(200).send(response);
+    }
+  }
+  
 })
 
 app.options('/api/admin/sendNews', cors(corsOptions), (req,res) => {
@@ -540,27 +641,88 @@ app.post('/api/admin/sendNews', cors(corsOptions), authenticateToken, checkAdmin
   const month = parseInt(date.getMonth())+parseInt(1)
   const dateString = date.getFullYear() + '-' + month + '-' + date.getDate()
   const timeString = date.getHours() + ':' + date.getMinutes() + ':' + date.getSeconds()
-  try {
-    const [rows, fields] = await promisePool.execute('INSERT INTO news(user_id, news.date, news.time, title, content) VALUES (?,?,?,?,?);',
-    [req.user.uid,
-    dateString,
-    timeString,
-    req.body.title,
-    req.body.content])
-  }
-  catch (err) {
-    workingData.error = err
-    sendToLog(req.path, err)
-  }
-  if (workingData.error) {
-    response.status.code = '500'
-    response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
-    res.status(response.status.code).send(response);
+
+  const badInput = !req.body.title || !req.body.content
+  if (badInput) {
+    sendToLog(req.path, 'ktoś się bawił, nieprawidłowe wejście...', req.user.uid)
+    response.status.code = '400'
+    response.status.message = 'Nieprawidłowe wywołanie [FIELDS]'
+    res.status(200).send(response);
   }
   else {
-    response.status.code = '200'
-    response.status.message = 'Zaktualizowano poprawnie'
+    try {
+      const [rows, fields] = await promisePool.execute('INSERT INTO news(user_id, news.date, news.time, title, content) VALUES (?,?,?,?,?);',
+      [req.user.uid,
+      dateString,
+      timeString,
+      req.body.title,
+      req.body.content])
+    }
+    catch (err) {
+      workingData.error = err
+      sendToLog(req.path, err)
+    }
+    if (workingData.error) {
+      response.status.code = '500'
+      response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
+      res.status(response.status.code).send(response);
+    }
+    else {
+      response.status.code = '200'
+      response.status.message = 'Zaktualizowano poprawnie'
+      res.status(200).send(response);
+    }
+  }
+  
+})
+
+app.options('/api/admin/addMatch', cors(corsOptions), (req,res) => {
+  res.status(200)
+})
+app.post('/api/admin/addMatch', cors(corsOptions), authenticateToken, checkAdmin, async (req,res) => {
+  const workingData = {
+    error: null,
+    note: null
+  }
+  const response = {
+    status: {
+      code: '0',
+      message: null
+    }
+  }
+  if (!req.body.note) workingData.note = ""
+  else workingData.note = req.body.note
+
+  const badInput = !req.body.team_id_1 || !req.body.team_id_2 || !req.body.date || !req.body.time
+  if (badInput) {
+    sendToLog(req.path, 'ktoś się bawił, nieprawidłowe wejście...', req.user.uid)
+    response.status.code = '400'
+    response.status.message = 'Nieprawidłowe wywołanie [FIELDS]'
     res.status(200).send(response);
+  }
+  else {
+    try {
+      const [rows, fields] = await promisePool.execute('INSERT INTO matches(team_id_1, team_id_2, date, time, note) VALUES (?, ?, ?, ?, ?)',
+      [req.body.team_id_1,
+      req.body.team_id_2,
+      req.body.date,
+      req.body.time,
+      workingData.note])
+    }
+    catch (err) {
+      workingData.error = err
+      sendToLog(req.path, err)
+    }
+    if (workingData.error) {
+      response.status.code = '500'
+      response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
+      res.status(response.status.code).send(response);
+    }
+    else {
+      response.status.code = '200'
+      response.status.message = 'Zaktualizowano poprawnie'
+      res.status(200).send(response);
+    }
   }
 })
 
