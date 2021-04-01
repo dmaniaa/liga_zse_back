@@ -2,17 +2,13 @@ const express = require('express')
 const mysql = require('mysql2')
 const cors = require('cors')
 const jwt = require('jsonwebtoken');
-const dotenv = require('dotenv');
 var bcrypt = require('bcrypt');
-const { request } = require('express');
-
+require('dotenv').config({path:'../turniej_strona_back_v2/.env'})
 
 const app = express()
 const port = 2137
 
 let refreshTokens = []
-
-require('dotenv').config({path:'turniej_strona_back_v2/.env'})
 
 const pool =  mysql.createPool({
   host: 'localhost',
@@ -114,7 +110,7 @@ app.get('/api/getConfig', cors(corsOptions), async (req, res) => {
     },
     data: null
   }
-  try {
+  /* try {
     const [rows, fields] = await promisePool.execute('SELECT * FROM config;',[])
     workingData.config = rows[0]
   }
@@ -139,7 +135,17 @@ app.get('/api/getConfig', cors(corsOptions), async (req, res) => {
     response.status.message = 'OK'
     response.data = workingData.config
     res.status(response.status.code).send(response);
+  } */
+  response.status.code = '200'
+  response.status.message = 'OK [placeholder]'
+  response.data = {
+    signupOpen: false,
+    compName: 'Liga ZSE 2020',
+    description: 'Zapisy trwały 3 października 2020 do 18 października 2020. Aktualnie rozpoczęliśmy rundy finałowe. Dalsze informacje będą na Discordzie turniejowym, na którego zapraszamy graczy, a także kibiców, link w zakładce Media społecznościowe',
+    logo: true,
+    showTrailer: false
   }
+  res.status(response.status.code).send(response);
 })
 
 app.options('/api/getNews', cors(corsOptions), (req,res) => {
@@ -333,7 +339,11 @@ app.get('/api/getTeam/:team_id', cors(corsOptions), async (req, res) => {
   try {
     const [rows2, fields2] = await promisePool.execute('SELECT user_id, nick, scope, name, surname, cm FROM users WHERE team_id=?;', [req.params.team_id])
     workingData.users = rows2
-    workingData.users.forEach(user => user.scope = JSON.parse(user.scope))
+    workingData.users.forEach(user => {
+       user.scope = JSON.parse(user.scope)
+       if (user.scope.includes('captain')) user._rowVariant = 'secondary'
+       else user._rowVariant = ''
+    })
   }
   catch (err) {
     workingData.error = err
@@ -621,7 +631,6 @@ app.post('/api/user/update', cors(corsOptions), authenticateToken, async (req,re
       res.status(200).send(response);
     }
   }
-  
 })
 
 app.options('/api/admin/sendNews', cors(corsOptions), (req,res) => {
@@ -708,6 +717,181 @@ app.post('/api/admin/addMatch', cors(corsOptions), authenticateToken, checkAdmin
       req.body.date,
       req.body.time,
       workingData.note])
+    }
+    catch (err) {
+      workingData.error = err
+      sendToLog(req.path, err)
+    }
+    if (workingData.error) {
+      response.status.code = '500'
+      response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
+      res.status(response.status.code).send(response);
+    }
+    else {
+      response.status.code = '200'
+      response.status.message = 'Zaktualizowano poprawnie'
+      res.status(200).send(response);
+    }
+  }
+})
+
+app.options('/api/admin/updateMatch', cors(corsOptions), (req,res) => {
+  res.status(200)
+})
+app.post('/api/admin/updateMatch', cors(corsOptions), authenticateToken, checkAdmin, async (req,res) => {
+  const workingData = {
+    error: null,
+    note: '',
+    team_1_score: '',
+    team_2_score: ''
+  }
+  const response = {
+    status: {
+      code: '0',
+      message: null
+    }
+  }
+
+  if (req.body.note) workingData.note = req.body.note
+  if (req.body.team_id_1_score) workingData.team_1_score = req.body.team_id_1_score
+  if (req.body.team_id_2_score) workingData.team_2_score = req.body.team_id_2_score
+
+  const badInput = !req.body.team_id_1 || !req.body.team_id_2 || !req.body.date || !req.body.time || !req.body.team_id_1_score || !req.body.team_id_2_score || !req.body.match_id
+  if (badInput) {
+    sendToLog(req.path, 'ktoś się bawił, nieprawidłowe wejście...', req.user.uid)
+    response.status.code = '400'
+    response.status.message = 'Nieprawidłowe wywołanie [FIELDS]'
+    res.status(200).send(response);
+  }
+
+  else {
+    try {
+      const [rows, fields] = await promisePool.execute('UPDATE matches SET team_id_1 = ?, team_id_2 = ?, date = ?, time = ?, team_id_1_score = ?, team_id_2_score = ?, note = ? WHERE match_id = ?;',
+      [req.body.team_id_1,
+      req.body.team_id_2,
+      req.body.date,
+      req.body.time,
+      workingData.team_1_score,
+      workingData.team_2_score,
+      workingData.note,
+      req.body.match_id
+      ])
+    }
+    catch (err) {
+      workingData.error = err
+      sendToLog(req.path, err)
+    }
+    if (workingData.error) {
+      response.status.code = '500'
+      response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
+      res.status(response.status.code).send(response);
+    }
+    else {
+      response.status.code = '200'
+      response.status.message = 'Zaktualizowano poprawnie'
+      res.status(200).send(response);
+    }
+  }
+})
+
+app.options('/api/admin/getTeam/:team_id', cors(corsOptions), (req,res) => {
+  res.status(200)
+})
+app.get('/api/admin/getTeam/:team_id', cors(corsOptions), authenticateToken, checkAdmin, async (req, res) => {
+  const workingData = {
+    team: null,
+    users: null,
+    error: null
+  }
+  const response = {
+    status: {
+      code: '0',
+      message: null
+    },
+    data: {
+      team: null,
+      users: null
+    }
+  }
+  try {
+    const [rows1, fields1] = await promisePool.execute('SELECT team_name, score FROM teams WHERE team_id=?;', [req.params.team_id])
+    workingData.team = rows1[0]
+  }
+  catch (err) {
+    workingData.error = err
+    sendToLog(req.path, err)
+  }
+  try {
+    const [rows2, fields2] = await promisePool.execute('SELECT user_id, nick, scope, name, surname, usrclass, email, cm, discord FROM users WHERE team_id=?;', [req.params.team_id])
+    workingData.users = rows2
+    workingData.users.forEach(user => {
+      user.scope = JSON.parse(user.scope)
+      if (user.scope.includes('captain')) user._rowVariant = 'secondary'
+      else user._rowVariant = ''
+   })
+  }
+  catch (err) {
+    workingData.error = err
+    sendToLog(req.path, err)
+  }
+
+  if (workingData.error) {
+    response.status.code = '500'
+    response.status.message = 'Wewnętrzny błąd serwera ' + workingData.error
+    res.status(response.status.code).send(response);
+  }
+
+  else if (!workingData.team) {
+    response.status.code = '404'
+    response.status.message = 'Nie znaleziono drużyny'
+    res.status(200).send(response);
+  }
+  else if (!workingData.users.length) {
+    response.data.team = workingData.team
+    response.status.code = '404'
+    response.status.message = 'Nie znaleziono graczy'
+    res.status(200).send(response);
+  }
+  else {
+    response.data.team = workingData.team
+    response.data.users = workingData.users
+    response.status.code = '200'
+    response.status.message = 'OK'
+    res.status(200).send(response);
+  }
+})
+
+app.options('/api/admin/user/update', cors(corsOptions), (req,res) => {
+  res.status(200)
+})
+app.post('/api/admin/user/update', cors(corsOptions), authenticateToken, checkAdmin, async (req,res) => {
+  const workingData = {
+    error: null
+  }
+  const response = {
+    status: {
+      code: '0',
+      message: null
+    }
+  }
+  const badInput = !req.body.name || !req.body.surname || !req.body.scope || !req.body.usrclass || !req.body.cm || !req.body.discord || !req.body.user_id
+  if (badInput) {
+    sendToLog(req.path, 'ktoś się bawił, nieprawidłowe wejście...', req.user.uid)
+    response.status.code = '400'
+    response.status.message = 'Nieprawidłowe wywołanie [FIELDS]'
+    res.status(200).send(response);
+  }
+  else {
+    try {
+      const [rows, fields] = await promisePool.execute('UPDATE users SET name = ? , surname = ? , usrclass = ?, scope = ?, cm = ?, discord = ?, email = ? WHERE user_id = ?;',
+      [req.body.name,
+      req.body.surname,
+      req.body.usrclass,
+      req.body.scope,
+      req.body.cm,
+      req.body.discord,
+      req.body.email,
+      req.body.user_id])
     }
     catch (err) {
       workingData.error = err
